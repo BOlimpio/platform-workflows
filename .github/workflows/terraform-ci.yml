@@ -1,0 +1,687 @@
+# =============================================================================
+# REUSABLE TERRAFORM CI WORKFLOW
+# =============================================================================
+# This is a centralized, reusable workflow template for Terraform projects.
+# Project repositories call this workflow using `workflow_call`.
+#
+# Features:
+# - Format checking (terraform fmt)
+# - Validation (terraform validate)
+# - Linting (tflint with AWS ruleset)
+# - Testing (terraform test) - environment or module mode
+# - Security scanning (checkov)
+# - Compliance checking (terraform-compliance)
+# - Cost estimation (infracost)
+#
+# Usage in consuming repository:
+#   jobs:
+#     ci:
+#       uses: your-org/platform-workflows/.github/workflows/terraform-ci.yml@v1
+#       with:
+#         working_directory: "environments/dev"
+#         environment: "dev"
+#       secrets:
+#         AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+#
+# =============================================================================
+
+name: Terraform CI (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      # -----------------------------------------------------------------------
+      # Required Inputs
+      # -----------------------------------------------------------------------
+      working_directory:
+        description: 'Working directory for Terraform commands (e.g., environments/dev)'
+        required: true
+        type: string
+      environment:
+        description: 'Environment name (dev, staging, prod)'
+        required: true
+        type: string
+
+      # -----------------------------------------------------------------------
+      # Optional Inputs - Versions
+      # -----------------------------------------------------------------------
+      terraform_version:
+        description: 'Terraform version to use'
+        required: false
+        type: string
+        default: '1.9.0'
+      tflint_version:
+        description: 'TFLint version to use'
+        required: false
+        type: string
+        default: 'v0.50.0'
+      python_version:
+        description: 'Python version for compliance tools'
+        required: false
+        type: string
+        default: '3.11'
+
+      # -----------------------------------------------------------------------
+      # Optional Inputs - Testing
+      # -----------------------------------------------------------------------
+      test_mode:
+        description: 'Test mode: environment (unified) or modules (individual)'
+        required: false
+        type: string
+        default: 'environment'
+      modules_to_test:
+        description: 'Modules to test (comma-separated or "all"). Only for test_mode=modules'
+        required: false
+        type: string
+        default: 'all'
+      modules_base_path:
+        description: 'Base path for modules directory'
+        required: false
+        type: string
+        default: 'modules/aws'
+      run_apply_tests:
+        description: 'Run apply tests (creates real AWS resources)'
+        required: false
+        type: boolean
+        default: false
+
+      # -----------------------------------------------------------------------
+      # Optional Inputs - Compliance
+      # -----------------------------------------------------------------------
+      compliance_features_path:
+        description: 'Path to terraform-compliance feature files'
+        required: false
+        type: string
+        default: 'compliance/features'
+      checkov_config_file:
+        description: 'Path to checkov configuration file'
+        required: false
+        type: string
+        default: '.checkov.yaml'
+      tflint_config_file:
+        description: 'Path to TFLint configuration file'
+        required: false
+        type: string
+        default: '.tflint.hcl'
+
+      # -----------------------------------------------------------------------
+      # Optional Inputs - Feature Flags
+      # -----------------------------------------------------------------------
+      enable_security_scan:
+        description: 'Enable Checkov security scanning'
+        required: false
+        type: boolean
+        default: true
+      enable_compliance:
+        description: 'Enable terraform-compliance checks'
+        required: false
+        type: boolean
+        default: true
+      enable_cost_estimation:
+        description: 'Enable Infracost cost estimation'
+        required: false
+        type: boolean
+        default: true
+      enable_lint:
+        description: 'Enable TFLint linting'
+        required: false
+        type: boolean
+        default: true
+
+      # -----------------------------------------------------------------------
+      # Optional Inputs - AWS
+      # -----------------------------------------------------------------------
+      aws_region:
+        description: 'AWS region for operations'
+        required: false
+        type: string
+        default: 'us-east-1'
+
+    # -------------------------------------------------------------------------
+    # Secrets
+    # -------------------------------------------------------------------------
+    secrets:
+      AWS_ROLE_ARN:
+        description: 'AWS IAM Role ARN for OIDC authentication'
+        required: true
+      INFRACOST_API_KEY:
+        description: 'Infracost API key for cost estimation'
+        required: false
+
+    # -------------------------------------------------------------------------
+    # Outputs
+    # -------------------------------------------------------------------------
+    outputs:
+      format_result:
+        description: 'Format check result'
+        value: ${{ jobs.format.result }}
+      validate_result:
+        description: 'Validation result'
+        value: ${{ jobs.validate.result }}
+      lint_result:
+        description: 'Lint result'
+        value: ${{ jobs.lint.result }}
+      test_result:
+        description: 'Test result'
+        value: ${{ jobs.test-results.result }}
+      security_result:
+        description: 'Security scan result'
+        value: ${{ jobs.security.result }}
+      compliance_result:
+        description: 'Compliance check result'
+        value: ${{ jobs.compliance.result }}
+
+jobs:
+  # ===========================================================================
+  # Stage 1: Format Check
+  # ===========================================================================
+  format:
+    name: 🎨 Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+
+      - name: Check formatting
+        run: terraform fmt -check -recursive -diff
+
+  # ===========================================================================
+  # Stage 2: Validate
+  # ===========================================================================
+  validate:
+    name: ✅ Validate
+    runs-on: ubuntu-latest
+    needs: format
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+
+      - name: Cache Terraform plugins
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.terraform.d/plugin-cache
+            ${{ inputs.working_directory }}/.terraform
+          key: ${{ runner.os }}-terraform-${{ hashFiles(format('{0}/.terraform.lock.hcl', inputs.working_directory)) }}
+          restore-keys: |
+            ${{ runner.os }}-terraform-
+
+      - name: Terraform Init
+        working-directory: ${{ inputs.working_directory }}
+        run: terraform init -backend=false
+
+      - name: Terraform Validate
+        working-directory: ${{ inputs.working_directory }}
+        run: terraform validate
+
+  # ===========================================================================
+  # Stage 3: Lint (TFLint)
+  # ===========================================================================
+  lint:
+    name: 🔍 Lint
+    runs-on: ubuntu-latest
+    needs: validate
+    if: inputs.enable_lint
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+
+      - name: Cache TFLint plugins
+        uses: actions/cache@v4
+        with:
+          path: ~/.tflint.d/plugins
+          key: ${{ runner.os }}-tflint-${{ hashFiles(inputs.tflint_config_file) }}
+          restore-keys: |
+            ${{ runner.os }}-tflint-
+
+      - name: Setup TFLint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: ${{ inputs.tflint_version }}
+
+      - name: Initialize TFLint
+        run: tflint --init
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Run TFLint on root module
+        working-directory: ${{ inputs.working_directory }}
+        run: tflint --config=${{ github.workspace }}/${{ inputs.tflint_config_file }} --format=compact
+
+      - name: Run TFLint on child modules
+        run: |
+          if [ -d "${{ inputs.modules_base_path }}" ]; then
+            for module in ${{ inputs.modules_base_path }}/*/; do
+              # Skip issue-* modules (demo modules with intentional issues)
+              if [[ "$module" != *"issue-"* ]]; then
+                echo "Linting $module..."
+                tflint --config=${{ github.workspace }}/${{ inputs.tflint_config_file }} --chdir="$module" --format=compact
+              fi
+            done
+          fi
+
+  # ===========================================================================
+  # Stage 4a: Discover Modules (for module testing mode)
+  # ===========================================================================
+  discover-modules:
+    name: 🔍 Discover Modules
+    runs-on: ubuntu-latest
+    if: inputs.test_mode == 'modules'
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      modules_count: ${{ steps.set-matrix.outputs.modules_count }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Discover and filter modules
+        id: set-matrix
+        run: |
+          # Get all modules with tests (excluding issue-* demo modules)
+          ALL_MODULES=$(find ${{ inputs.modules_base_path }} -maxdepth 1 -type d -name "[!issue-]*" ! -name "$(basename ${{ inputs.modules_base_path }})" | xargs -I {} basename {} | sort)
+          
+          echo "📦 Available modules with tests:"
+          for module in $ALL_MODULES; do
+            if [ -d "${{ inputs.modules_base_path }}/$module/tests" ]; then
+              echo "  ✅ $module"
+            fi
+          done
+          
+          # Get user-selected modules
+          USER_INPUT="${{ inputs.modules_to_test }}"
+          
+          if [ "$USER_INPUT" == "all" ] || [ -z "$USER_INPUT" ]; then
+            # Use all modules that have tests directory
+            SELECTED_MODULES=()
+            for module in $ALL_MODULES; do
+              if [ -d "${{ inputs.modules_base_path }}/$module/tests" ]; then
+                SELECTED_MODULES+=("$module")
+              fi
+            done
+          else
+            # Parse comma-separated input and validate
+            IFS=',' read -ra REQUESTED <<< "$USER_INPUT"
+            SELECTED_MODULES=()
+            for module in "${REQUESTED[@]}"; do
+              # Trim whitespace
+              module=$(echo "$module" | xargs)
+              # Validate module exists and has tests
+              if [ -d "${{ inputs.modules_base_path }}/$module/tests" ]; then
+                SELECTED_MODULES+=("$module")
+                echo "✅ Module '$module' found and has tests"
+              else
+                echo "⚠️ Module '$module' not found or has no tests - skipping"
+              fi
+            done
+          fi
+          
+          # Build JSON matrix
+          if [ ${#SELECTED_MODULES[@]} -eq 0 ]; then
+            echo "❌ No valid modules selected!"
+            echo "matrix={\"module\":[]}" >> $GITHUB_OUTPUT
+            echo "modules_count=0" >> $GITHUB_OUTPUT
+          else
+            JSON_ARRAY=$(printf '%s\n' "${SELECTED_MODULES[@]}" | jq -R . | jq -s -c .)
+            echo "matrix={\"module\":$JSON_ARRAY}" >> $GITHUB_OUTPUT
+            echo "modules_count=${#SELECTED_MODULES[@]}" >> $GITHUB_OUTPUT
+            echo ""
+            echo "📋 Selected modules for testing: ${SELECTED_MODULES[*]}"
+          fi
+
+  # ===========================================================================
+  # Stage 4b: Test Environment (unified mode)
+  # ===========================================================================
+  test-environment:
+    name: 🧪 Test Environment
+    runs-on: ubuntu-latest
+    needs: [validate]
+    if: inputs.test_mode != 'modules'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-session-name: terraform-test-env-${{ github.run_id }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Cache Terraform plugins
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.terraform.d/plugin-cache
+            ${{ inputs.working_directory }}/.terraform
+          key: ${{ runner.os }}-terraform-env-${{ hashFiles(format('{0}/.terraform.lock.hcl', inputs.working_directory)) }}
+          restore-keys: |
+            ${{ runner.os }}-terraform-env-
+
+      - name: Terraform Init
+        working-directory: ${{ inputs.working_directory }}
+        run: terraform init -backend=false
+
+      - name: Run Plan Tests
+        working-directory: ${{ inputs.working_directory }}
+        run: terraform test -verbose -filter='*plan*'
+        env:
+          AWS_DEFAULT_REGION: ${{ inputs.aws_region }}
+
+      - name: Run Apply Tests
+        if: inputs.run_apply_tests
+        working-directory: ${{ inputs.working_directory }}
+        run: terraform test -verbose -filter='*apply*'
+        env:
+          AWS_DEFAULT_REGION: ${{ inputs.aws_region }}
+        timeout-minutes: 45
+
+      - name: Test Summary
+        if: always()
+        run: |
+          echo "## 🧪 Environment Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Setting | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Test Mode | environment |" >> $GITHUB_STEP_SUMMARY
+          echo "| Working Directory | ${{ inputs.working_directory }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Apply Tests | ${{ inputs.run_apply_tests }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | ${{ job.status }} |" >> $GITHUB_STEP_SUMMARY
+
+  # ===========================================================================
+  # Stage 4c: Test Modules (dynamic matrix - parallel execution)
+  # ===========================================================================
+  test-modules:
+    name: 🧪 Test Module (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    needs: [validate, discover-modules]
+    if: |
+      inputs.test_mode == 'modules' && 
+      needs.discover-modules.outputs.modules_count != '0'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.discover-modules.outputs.matrix) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-session-name: terraform-test-${{ matrix.module }}-${{ github.run_id }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Cache Terraform plugins
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.terraform.d/plugin-cache
+            ${{ inputs.modules_base_path }}/${{ matrix.module }}/.terraform
+          key: ${{ runner.os }}-terraform-${{ matrix.module }}-${{ hashFiles(format('{0}/{1}/.terraform.lock.hcl', inputs.modules_base_path, matrix.module)) }}
+          restore-keys: |
+            ${{ runner.os }}-terraform-${{ matrix.module }}-
+
+      - name: Terraform Init
+        working-directory: ${{ inputs.modules_base_path }}/${{ matrix.module }}
+        run: terraform init -backend=false
+
+      - name: Run Plan Tests
+        working-directory: ${{ inputs.modules_base_path }}/${{ matrix.module }}
+        run: |
+          echo "🧪 Testing ${{ matrix.module }} module..."
+          terraform test -verbose -filter='*plan*'
+        env:
+          AWS_DEFAULT_REGION: ${{ inputs.aws_region }}
+
+      - name: Run Apply Tests
+        if: inputs.run_apply_tests
+        working-directory: ${{ inputs.modules_base_path }}/${{ matrix.module }}
+        run: terraform test -verbose -filter='*apply*'
+        env:
+          AWS_DEFAULT_REGION: ${{ inputs.aws_region }}
+        timeout-minutes: 35
+
+      - name: Test Summary
+        if: always()
+        run: |
+          echo "## 🧪 Module Test Results: ${{ matrix.module }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Setting | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Module | ${{ matrix.module }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Path | ${{ inputs.modules_base_path }}/${{ matrix.module }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Apply Tests | ${{ inputs.run_apply_tests }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | ${{ job.status }} |" >> $GITHUB_STEP_SUMMARY
+
+  # ===========================================================================
+  # Stage 4d: Test Results Aggregator
+  # ===========================================================================
+  test-results:
+    name: 📊 Test Results
+    runs-on: ubuntu-latest
+    needs: [test-environment, test-modules]
+    if: always()
+    steps:
+      - name: Check test results
+        run: |
+          echo "## 📊 Test Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          ENV_RESULT="${{ needs.test-environment.result }}"
+          MOD_RESULT="${{ needs.test-modules.result }}"
+          
+          if [ "$ENV_RESULT" == "success" ] || [ "$ENV_RESULT" == "skipped" ]; then
+            echo "✅ Environment tests: $ENV_RESULT" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Environment tests: $ENV_RESULT" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ "$MOD_RESULT" == "success" ] || [ "$MOD_RESULT" == "skipped" ]; then
+            echo "✅ Module tests: $MOD_RESULT" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Module tests: $MOD_RESULT" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Fail if any test failed
+          if [ "$ENV_RESULT" == "failure" ] || [ "$MOD_RESULT" == "failure" ]; then
+            echo ""
+            echo "❌ Some tests failed!"
+            exit 1
+          fi
+
+  # ===========================================================================
+  # Stage 5: Security Scan (Checkov)
+  # ===========================================================================
+  security:
+    name: 🔐 Security Scan
+    runs-on: ubuntu-latest
+    needs: validate
+    if: inputs.enable_security_scan
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: .
+          config_file: ${{ inputs.checkov_config_file }}
+          output_format: cli,sarif
+          output_file_path: console,results.sarif
+          soft_fail: false
+          framework: terraform
+
+      - name: Upload SARIF file
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: results.sarif
+        continue-on-error: true
+
+  # ===========================================================================
+  # Stage 6: Compliance (terraform-compliance)
+  # ===========================================================================
+  compliance:
+    name: 📋 Compliance
+    runs-on: ubuntu-latest
+    needs: [test-results, security]
+    if: always() && inputs.enable_compliance && !cancelled()
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version }}
+          cache: 'pip'
+
+      - name: Install terraform-compliance
+        run: pip install terraform-compliance
+
+      - name: Terraform Init
+        working-directory: ${{ inputs.working_directory }}
+        run: terraform init -backend=false
+
+      - name: Generate Terraform Plan
+        working-directory: ${{ inputs.working_directory }}
+        run: |
+          # Generate plan for compliance check (with EKS/RDS disabled for speed)
+          terraform plan \
+            -var="enable_eks=false" \
+            -var="enable_rds=false" \
+            -var="enable_nat_gateway=false" \
+            -out=tfplan -input=false || true
+          terraform show -json tfplan > tfplan.json
+
+      - name: Run terraform-compliance
+        working-directory: ${{ inputs.working_directory }}
+        run: |
+          terraform-compliance \
+            -f ${{ github.workspace }}/${{ inputs.compliance_features_path }} \
+            -p tfplan.json
+        continue-on-error: true
+
+  # ===========================================================================
+  # Stage 7: Cost Estimation (Infracost) - PR only
+  # ===========================================================================
+  cost:
+    name: 💰 Cost Estimate
+    runs-on: ubuntu-latest
+    needs: validate
+    if: inputs.enable_cost_estimation && github.event_name == 'pull_request'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Infracost
+        uses: infracost/actions/setup@v3
+        with:
+          api-key: ${{ secrets.INFRACOST_API_KEY }}
+
+      - name: Checkout base branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          path: base
+
+      - name: Generate Infracost diff
+        run: |
+          # Generate baseline from base branch
+          infracost breakdown --path=base/${{ inputs.working_directory }} \
+            --format=json \
+            --out-file=/tmp/infracost-base.json || true
+
+          # Generate cost from PR branch
+          infracost breakdown --path=${{ inputs.working_directory }} \
+            --format=json \
+            --out-file=/tmp/infracost.json
+
+          # Generate diff
+          infracost diff --path=/tmp/infracost.json \
+            --compare-to=/tmp/infracost-base.json \
+            --format=json \
+            --out-file=/tmp/infracost-diff.json
+
+      - name: Post Infracost comment
+        uses: infracost/actions/comment@v1
+        with:
+          path: /tmp/infracost-diff.json
+          behavior: update
+        continue-on-error: true
+
+  # ===========================================================================
+  # Summary Job
+  # ===========================================================================
+  ci-summary:
+    name: 📊 CI Summary
+    runs-on: ubuntu-latest
+    needs: [format, validate, lint, test-results, security, compliance]
+    if: always()
+    steps:
+      - name: Check job results
+        run: |
+          echo "## CI Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Quality Checks" >> $GITHUB_STEP_SUMMARY
+          echo "| Stage | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Format | ${{ needs.format.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Validate | ${{ needs.validate.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Lint | ${{ needs.lint.result == 'success' && '✅' || (needs.lint.result == 'skipped' && '⏭️' || '❌') }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tests | ${{ needs.test-results.result == 'success' && '✅' || (needs.test-results.result == 'skipped' && '⏭️' || '❌') }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Security | ${{ needs.security.result == 'success' && '✅' || (needs.security.result == 'skipped' && '⏭️' || '❌') }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Compliance | ${{ needs.compliance.result == 'success' && '✅' || (needs.compliance.result == 'skipped' && '⏭️' || '⚠️') }} |" >> $GITHUB_STEP_SUMMARY
+          
+          # Fail if critical stages failed
+          if [[ "${{ needs.format.result }}" != "success" ]] || \
+             [[ "${{ needs.validate.result }}" != "success" ]]; then
+            echo ""
+            echo "❌ CI Pipeline failed - please fix the issues above"
+            exit 1
+          fi
+          
+          if [[ "${{ needs.test-results.result }}" == "failure" ]]; then
+            echo ""
+            echo "❌ Test stage failed - please check test results"
+            exit 1
+          fi
+          
+          if [[ "${{ needs.security.result }}" == "failure" ]]; then
+            echo ""
+            echo "❌ Security scan failed - please fix security issues"
+            exit 1
+          fi
+          
+          echo ""
+          echo "✅ All CI checks passed!"

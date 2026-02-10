@@ -1,0 +1,260 @@
+# =============================================================================
+# REUSABLE TERRAFORM DESTROY WORKFLOW
+# =============================================================================
+# This is a centralized, reusable workflow for Terraform infrastructure teardown.
+# Includes double approval gate for safety.
+#
+# Usage in consuming repository:
+#   jobs:
+#     destroy:
+#       uses: your-org/platform-workflows/.github/workflows/terraform-destroy.yml@v1
+#       with:
+#         working_directory: "environments/dev"
+#         environment: "dev"
+#         confirmation_word: "DESTROY-DEV"
+#       secrets:
+#         AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+#
+# =============================================================================
+
+name: Terraform Destroy (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      # -----------------------------------------------------------------------
+      # Required Inputs
+      # -----------------------------------------------------------------------
+      working_directory:
+        description: 'Working directory for Terraform commands'
+        required: true
+        type: string
+      environment:
+        description: 'Environment name (must match GitHub environment)'
+        required: true
+        type: string
+      confirmation_word:
+        description: 'Confirmation word to proceed with destroy'
+        required: true
+        type: string
+
+      # -----------------------------------------------------------------------
+      # Optional Inputs
+      # -----------------------------------------------------------------------
+      terraform_version:
+        description: 'Terraform version to use'
+        required: false
+        type: string
+        default: '1.9.0'
+      aws_region:
+        description: 'AWS region for operations'
+        required: false
+        type: string
+        default: 'us-east-1'
+      destroy_timeout_minutes:
+        description: 'Timeout for destroy job in minutes'
+        required: false
+        type: number
+        default: 60
+      expected_confirmation:
+        description: 'Expected confirmation word (default: DESTROY)'
+        required: false
+        type: string
+        default: 'DESTROY'
+
+    secrets:
+      AWS_ROLE_ARN:
+        description: 'AWS IAM Role ARN for OIDC authentication'
+        required: true
+
+    outputs:
+      destroy_result:
+        description: 'Destroy job result'
+        value: ${{ jobs.destroy.result }}
+
+jobs:
+  # ===========================================================================
+  # Validation
+  # ===========================================================================
+  validate:
+    name: 🔐 Validate Confirmation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate confirmation
+        run: |
+          echo "## 🔐 Destroy Validation" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ inputs.confirmation_word }}" != "${{ inputs.expected_confirmation }}" ]; then
+            echo "❌ **Confirmation failed!**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Expected: \`${{ inputs.expected_confirmation }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "Received: \`${{ inputs.confirmation_word }}\`" >> $GITHUB_STEP_SUMMARY
+            echo ""
+            echo "❌ Confirmation word mismatch!"
+            echo "Expected: ${{ inputs.expected_confirmation }}"
+            echo "Received: ${{ inputs.confirmation_word }}"
+            exit 1
+          fi
+          
+          echo "✅ **Confirmation validated**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "⚠️ Proceeding with destruction of **${{ inputs.environment }}** environment..." >> $GITHUB_STEP_SUMMARY
+
+  # ===========================================================================
+  # First Approval Gate
+  # ===========================================================================
+  approve-1:
+    name: ✋ First Approval
+    runs-on: ubuntu-latest
+    needs: validate
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: First approval granted
+        run: |
+          echo "## ✅ First Approval Granted" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Detail | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | ${{ inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Approved by | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Time | $(date -u) |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "⚠️ **Awaiting second approval before destruction...**" >> $GITHUB_STEP_SUMMARY
+
+  # ===========================================================================
+  # Plan Destroy
+  # ===========================================================================
+  plan-destroy:
+    name: 📝 Plan Destroy
+    runs-on: ubuntu-latest
+    needs: approve-1
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-session-name: terraform-destroy-plan-${{ github.run_id }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Terraform Init
+        working-directory: ${{ inputs.working_directory }}
+        run: terraform init
+
+      - name: Terraform Plan Destroy
+        working-directory: ${{ inputs.working_directory }}
+        run: |
+          echo "📝 Planning destroy for ${{ inputs.environment }}..."
+          terraform plan -destroy -out=tfplan-destroy -input=false 2>&1 | tee destroy_plan_output.txt
+        env:
+          AWS_DEFAULT_REGION: ${{ inputs.aws_region }}
+
+      - name: Show Destroy Plan Summary
+        if: always()
+        working-directory: ${{ inputs.working_directory }}
+        run: |
+          echo "## 📝 Destroy Plan - ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "⚠️ **The following resources will be DESTROYED:**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat destroy_plan_output.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload Destroy Plan Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-destroy-${{ inputs.environment }}
+          path: |
+            ${{ inputs.working_directory }}/tfplan-destroy
+            ${{ inputs.working_directory }}/destroy_plan_output.txt
+          retention-days: 1
+
+  # ===========================================================================
+  # Second Approval Gate
+  # ===========================================================================
+  approve-2:
+    name: ⚠️ Final Approval (DESTRUCTIVE)
+    runs-on: ubuntu-latest
+    needs: plan-destroy
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Final approval granted
+        run: |
+          echo "## ⚠️ Final Approval Granted" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "🔥 **DESTRUCTION AUTHORIZED**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Detail | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | ${{ inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Approved by | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Time | $(date -u) |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "⚠️ **This is the SECOND approval for destruction. Proceeding...**" >> $GITHUB_STEP_SUMMARY
+
+  # ===========================================================================
+  # Destroy
+  # ===========================================================================
+  destroy:
+    name: 🔥 Destroy
+    runs-on: ubuntu-latest
+    needs: approve-2
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-session-name: terraform-destroy-${{ github.run_id }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Download Destroy Plan Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-destroy-${{ inputs.environment }}
+          path: ${{ inputs.working_directory }}
+
+      - name: Terraform Init
+        working-directory: ${{ inputs.working_directory }}
+        run: terraform init
+
+      - name: Terraform Destroy
+        working-directory: ${{ inputs.working_directory }}
+        timeout-minutes: ${{ inputs.destroy_timeout_minutes }}
+        run: |
+          echo "🔥 Destroying infrastructure in ${{ inputs.environment }}..."
+          terraform apply -auto-approve tfplan-destroy
+        env:
+          AWS_DEFAULT_REGION: ${{ inputs.aws_region }}
+
+      - name: Destroy Summary
+        if: always()
+        run: |
+          echo "## 🔥 Terraform Destroy - ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Detail | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | ${{ job.status == 'success' && '✅ Destroyed' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | ${{ inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Run ID | ${{ github.run_id }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Actor | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
