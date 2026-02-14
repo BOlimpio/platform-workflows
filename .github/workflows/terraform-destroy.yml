@@ -131,6 +131,9 @@ jobs:
     name: 📝 Plan Destroy
     runs-on: ubuntu-latest
     needs: approve-1
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -214,6 +217,9 @@ jobs:
     name: 🔥 Destroy
     runs-on: ubuntu-latest
     needs: approve-2
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
