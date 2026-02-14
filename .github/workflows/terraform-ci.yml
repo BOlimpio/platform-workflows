@@ -137,12 +137,6 @@ on:
         type: string
         default: 'us-east-1'
 
-      AWS_ROLE_ARN:
-        description: 'AWS region for operations'
-        required: false
-        type: string
-        default: 'us-east-1'
-
     # -------------------------------------------------------------------------
     # Secrets
     # -------------------------------------------------------------------------
@@ -446,7 +440,7 @@ jobs:
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ inputs.AWS_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           role-session-name: terraform-test-${{ matrix.module }}-${{ github.run_id }}
           aws-region: ${{ inputs.aws_region }}
           audience: sts.amazonaws.com
