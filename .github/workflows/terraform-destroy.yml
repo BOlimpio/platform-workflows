@@ -146,6 +146,8 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           role-session-name: terraform-destroy-plan-${{ github.run_id }}
           aws-region: ${{ inputs.aws_region }}
+          audience: sts.amazonaws.com
+          output-env-credentials: true
 
       - name: Terraform Init
         working-directory: ${{ inputs.working_directory }}
@@ -227,6 +229,8 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           role-session-name: terraform-destroy-${{ github.run_id }}
           aws-region: ${{ inputs.aws_region }}
+          audience: sts.amazonaws.com
+          output-env-credentials: true
 
       - name: Download Destroy Plan Artifact
         uses: actions/download-artifact@v4

@@ -366,6 +366,8 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           role-session-name: terraform-test-env-${{ github.run_id }}
           aws-region: ${{ inputs.aws_region }}
+          audience: sts.amazonaws.com
+          output-env-credentials: true
 
       - name: Cache Terraform plugins
         uses: actions/cache@v4
@@ -435,6 +437,8 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           role-session-name: terraform-test-${{ matrix.module }}-${{ github.run_id }}
           aws-region: ${{ inputs.aws_region }}
+          audience: sts.amazonaws.com
+          output-env-credentials: true          
 
       - name: Cache Terraform plugins
         uses: actions/cache@v4
