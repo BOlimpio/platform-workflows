@@ -392,7 +392,9 @@ jobs:
 
       - name: Run Plan Tests
         working-directory: ${{ inputs.working_directory }}
-        run: terraform test -verbose -filter='*plan*'
+        run: |
+          echo "pwd: $(pwd)"
+          terraform test -verbose -filter='*plan*'
         env:
           AWS_DEFAULT_REGION: ${{ inputs.aws_region }}
 
