@@ -60,6 +60,11 @@ on:
         required: false
         type: string
         default: '3.11'
+      test_directory:
+        description: "Directory containing .tftest.hcl files"
+        required: false
+        type: string
+        default: "tests"
 
       # -----------------------------------------------------------------------
       # Optional Inputs - Testing
@@ -384,24 +389,16 @@ jobs:
         working-directory: ${{ inputs.working_directory }}
         run: terraform init -backend=false
 
-      - name: Debug test discovery
-        run: |
-          pwd
-          ls -la
-          find . -maxdepth 4 -name "*.tftest.hcl" -print
-
       - name: Run Plan Tests
         working-directory: ${{ inputs.working_directory }}
-        run: |
-          echo "pwd: $(pwd)"
-          terraform test -verbose -filter='*plan*'
+        run: terraform test -verbose -test-directory=${{ inputs.test_directory }} -filter='*plan*'
         env:
           AWS_DEFAULT_REGION: ${{ inputs.aws_region }}
 
       - name: Run Apply Tests
         if: inputs.run_apply_tests
         working-directory: ${{ inputs.working_directory }}
-        run: terraform test -verbose -filter='*apply*'
+        run: terraform test -verbose -test-directory=${{ inputs.test_directory }} -filter='*apply*'
         env:
           AWS_DEFAULT_REGION: ${{ inputs.aws_region }}
         timeout-minutes: 45
@@ -468,14 +465,14 @@ jobs:
         working-directory: ${{ inputs.modules_base_path }}/${{ matrix.module }}
         run: |
           echo "🧪 Testing ${{ matrix.module }} module..."
-          terraform test -verbose -filter='*plan*'
+          terraform test -verbose -test-directory=${{ inputs.test_directory }} -filter='*plan*'
         env:
           AWS_DEFAULT_REGION: ${{ inputs.aws_region }}
 
       - name: Run Apply Tests
         if: inputs.run_apply_tests
         working-directory: ${{ inputs.modules_base_path }}/${{ matrix.module }}
-        run: terraform test -verbose -filter='*apply*'
+        run: terraform test -verbose -test-directory=${{ inputs.test_directory }} -filter='*apply*'
         env:
           AWS_DEFAULT_REGION: ${{ inputs.aws_region }}
         timeout-minutes: 35
