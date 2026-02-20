@@ -384,6 +384,12 @@ jobs:
         working-directory: ${{ inputs.working_directory }}
         run: terraform init -backend=false
 
+      - name: Debug test discovery
+        run: |
+          pwd
+          ls -la
+          find . -maxdepth 4 -name "*.tftest.hcl" -print
+
       - name: Run Plan Tests
         working-directory: ${{ inputs.working_directory }}
         run: terraform test -verbose -filter='*plan*'
