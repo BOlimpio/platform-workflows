@@ -65,6 +65,16 @@ on:
         required: false
         type: string
         default: "tests"
+      plan_test_file:
+        description: "Name of the plan test file (e.g., plan.tftest.hcl)"
+        required: false
+        type: string
+        default: "plan.tftest.hcl"
+      apply_test_file:
+        description: "Name of the apply test file (e.g., apply.tftest.hcl)"
+        required: false
+        type: string
+        default: "apply.tftest.hcl"
 
       # -----------------------------------------------------------------------
       # Optional Inputs - Testing
@@ -391,14 +401,18 @@ jobs:
 
       - name: Run Plan Tests
         working-directory: ${{ inputs.working_directory }}
-        run: terraform test -verbose -test-directory=${{ inputs.test_directory }} -filter='*plan*'
+        run: |
+          test -f "${{ inputs.test_directory }}/${{ inputs.plan_test_file }}" || (echo "Missing ${{ inputs.test_directory }}/${{ inputs.plan_test_file }}" && exit 1)
+          terraform test -test-directory=${{ inputs.test_directory }} -filter=${{ inputs.plan_test_file }}
         env:
           AWS_DEFAULT_REGION: ${{ inputs.aws_region }}
 
       - name: Run Apply Tests
         if: inputs.run_apply_tests
         working-directory: ${{ inputs.working_directory }}
-        run: terraform test -verbose -test-directory=${{ inputs.test_directory }} -filter='*apply*'
+        run: |
+          test -f "${{ inputs.test_directory }}/${{ inputs.apply_test_file }}" || (echo "Missing ${{ inputs.test_directory }}/${{ inputs.apply_test_file }}" && exit 1)
+          terraform test -test-directory=${{ inputs.test_directory }} -filter=${{ inputs.apply_test_file }}
         env:
           AWS_DEFAULT_REGION: ${{ inputs.aws_region }}
         timeout-minutes: 45
@@ -465,14 +479,18 @@ jobs:
         working-directory: ${{ inputs.modules_base_path }}/${{ matrix.module }}
         run: |
           echo "🧪 Testing ${{ matrix.module }} module..."
-          terraform test -verbose -test-directory=${{ inputs.test_directory }} -filter='*plan*'
+          test -f "${{ inputs.test_directory }}/${{ inputs.plan_test_file }}" || (echo "Missing ${{ inputs.test_directory }}/${{ inputs.plan_test_file }}" && exit 1)
+          terraform test -test-directory=${{ inputs.test_directory }} -filter=${{ inputs.plan_test_file }}
         env:
           AWS_DEFAULT_REGION: ${{ inputs.aws_region }}
 
       - name: Run Apply Tests
         if: inputs.run_apply_tests
         working-directory: ${{ inputs.modules_base_path }}/${{ matrix.module }}
-        run: terraform test -verbose -test-directory=${{ inputs.test_directory }} -filter='*apply*'
+        run: |
+          echo "🧪 Testing ${{ matrix.module }} apply tests..."
+          test -f "${{ inputs.test_directory }}/${{ inputs.apply_test_file }}" || (echo "Missing ${{ inputs.test_directory }}/${{ inputs.apply_test_file }}" && exit 1)
+          terraform test -test-directory=${{ inputs.test_directory }} -filter=${{ inputs.apply_test_file }}
         env:
           AWS_DEFAULT_REGION: ${{ inputs.aws_region }}
         timeout-minutes: 35
