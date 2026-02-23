@@ -402,7 +402,7 @@ jobs:
       - name: Run Plan Tests
         working-directory: ${{ inputs.working_directory }}
         run: |
-          test -f "${{ inputs.test_directory }}/${{ inputs.plan_test_file }}" || (echo "Missing ${{ inputs.test_directory }}/${{ inputs.plan_test_file }}" && exit 1)
+          find "${{ inputs.test_directory }}/${{ inputs.plan_test_file }}" || (echo "Missing ${{ inputs.test_directory }}/${{ inputs.plan_test_file }}" && exit 1)
           terraform test -test-directory=${{ inputs.test_directory }} -filter=${{ inputs.plan_test_file }}
         env:
           AWS_DEFAULT_REGION: ${{ inputs.aws_region }}
@@ -411,7 +411,7 @@ jobs:
         if: inputs.run_apply_tests
         working-directory: ${{ inputs.working_directory }}
         run: |
-          test -f "${{ inputs.test_directory }}/${{ inputs.apply_test_file }}" || (echo "Missing ${{ inputs.test_directory }}/${{ inputs.apply_test_file }}" && exit 1)
+          find "${{ inputs.test_directory }}/${{ inputs.apply_test_file }}" || (echo "Missing ${{ inputs.test_directory }}/${{ inputs.apply_test_file }}" && exit 1)
           terraform test -test-directory=${{ inputs.test_directory }} -filter=${{ inputs.apply_test_file }}
         env:
           AWS_DEFAULT_REGION: ${{ inputs.aws_region }}
@@ -479,7 +479,7 @@ jobs:
         working-directory: ${{ inputs.modules_base_path }}/${{ matrix.module }}
         run: |
           echo "🧪 Testing ${{ matrix.module }} module..."
-          test -f "${{ inputs.test_directory }}/${{ inputs.plan_test_file }}" || (echo "Missing ${{ inputs.test_directory }}/${{ inputs.plan_test_file }}" && exit 1)
+          find "${{ inputs.test_directory }}/${{ inputs.plan_test_file }}" || (echo "Missing ${{ inputs.test_directory }}/${{ inputs.plan_test_file }}" && exit 1)
           terraform test -test-directory=${{ inputs.test_directory }} -filter=${{ inputs.plan_test_file }}
         env:
           AWS_DEFAULT_REGION: ${{ inputs.aws_region }}
@@ -489,7 +489,7 @@ jobs:
         working-directory: ${{ inputs.modules_base_path }}/${{ matrix.module }}
         run: |
           echo "🧪 Testing ${{ matrix.module }} apply tests..."
-          test -f "${{ inputs.test_directory }}/${{ inputs.apply_test_file }}" || (echo "Missing ${{ inputs.test_directory }}/${{ inputs.apply_test_file }}" && exit 1)
+          find "${{ inputs.test_directory }}/${{ inputs.apply_test_file }}" || (echo "Missing ${{ inputs.test_directory }}/${{ inputs.apply_test_file }}" && exit 1)
           terraform test -test-directory=${{ inputs.test_directory }} -filter=${{ inputs.apply_test_file }}
         env:
           AWS_DEFAULT_REGION: ${{ inputs.aws_region }}
