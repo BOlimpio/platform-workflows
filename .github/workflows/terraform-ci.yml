@@ -118,10 +118,25 @@ on:
         required: false
         type: string
         default: '.tflint.hcl'
+      compliance_tfvars_file:
+        description: 'Path to a .tfvars file (relative to working_directory) for the compliance terraform plan. Use this to disable expensive resources (e.g. EKS, RDS) for a faster plan without hardcoding vars in the workflow.'
+        required: false
+        type: string
+        default: ''
 
       # -----------------------------------------------------------------------
       # Optional Inputs - Feature Flags
       # -----------------------------------------------------------------------
+      lint_child_modules:
+        description: 'Also run TFLint on child modules found in modules_base_path. Enable this for repos that have a modules/ directory structure.'
+        required: false
+        type: boolean
+        default: false
+      exclude_modules_pattern:
+        description: 'Glob pattern to exclude modules from lint and test discovery (e.g. "issue-*" for intentionally broken demo modules).'
+        required: false
+        type: string
+        default: 'issue-*'
       enable_security_scan:
         description: 'Enable Checkov security scanning'
         required: false
@@ -279,11 +294,12 @@ jobs:
         run: tflint --config=${{ github.workspace }}/${{ inputs.tflint_config_file }} --format=compact
 
       - name: Run TFLint on child modules
+        if: inputs.lint_child_modules
         run: |
           if [ -d "${{ inputs.modules_base_path }}" ]; then
             for module in ${{ inputs.modules_base_path }}/*/; do
-              # Skip issue-* modules (demo modules with intentional issues)
-              if [[ "$module" != *"issue-"* ]]; then
+              # Skip modules matching exclude_modules_pattern (e.g. issue-* demo modules)
+              if [[ "$module" != *"${{ inputs.exclude_modules_pattern }}"* ]]; then
                 echo "Linting $module..."
                 tflint --config=${{ github.workspace }}/${{ inputs.tflint_config_file }} --chdir="$module" --format=compact
               fi
@@ -307,23 +323,33 @@ jobs:
       - name: Discover and filter modules
         id: set-matrix
         run: |
-          # Get all modules with tests (excluding issue-* demo modules)
-          ALL_MODULES=$(find ${{ inputs.modules_base_path }} -maxdepth 1 -type d -name "[!issue-]*" ! -name "$(basename ${{ inputs.modules_base_path }})" | xargs -I {} basename {} | sort)
+          # Get all modules with tests (excluding modules matching exclude_modules_pattern)
+          ALL_MODULES=$(find ${{ inputs.modules_base_path }} -maxdepth 1 -mindepth 1 -type d ! -name "$(basename ${{ inputs.modules_base_path }})" | xargs -I {} basename {} | sort)
           
+          EXCLUDE_PATTERN="${{ inputs.exclude_modules_pattern }}"
+
           echo "📦 Available modules with tests:"
           for module in $ALL_MODULES; do
+            # Skip modules matching exclude_modules_pattern
+            if [[ -n "$EXCLUDE_PATTERN" && "$module" == $EXCLUDE_PATTERN ]]; then
+              echo "  ⏭️ $module (excluded by pattern: $EXCLUDE_PATTERN)"
+              continue
+            fi
             if [ -d "${{ inputs.modules_base_path }}/$module/tests" ]; then
               echo "  ✅ $module"
             fi
           done
-          
+
           # Get user-selected modules
           USER_INPUT="${{ inputs.modules_to_test }}"
-          
+
           if [ "$USER_INPUT" == "all" ] || [ -z "$USER_INPUT" ]; then
-            # Use all modules that have tests directory
+            # Use all modules that have tests directory (excluding excluded pattern)
             SELECTED_MODULES=()
             for module in $ALL_MODULES; do
+              if [[ -n "$EXCLUDE_PATTERN" && "$module" == $EXCLUDE_PATTERN ]]; then
+                continue
+              fi
               if [ -d "${{ inputs.modules_base_path }}/$module/tests" ]; then
                 SELECTED_MODULES+=("$module")
               fi
@@ -604,12 +630,16 @@ jobs:
       - name: Generate Terraform Plan
         working-directory: ${{ inputs.working_directory }}
         run: |
-          # Generate plan for compliance check (with EKS/RDS disabled for speed)
-          terraform plan \
-            -var="enable_eks=false" \
-            -var="enable_rds=false" \
-            -var="enable_nat_gateway=false" \
-            -out=tfplan -input=false || true
+          # Build optional -var-file argument from compliance_tfvars_file input.
+          # This allows consumers to define their compliance scenario in a versioned
+          # .tfvars file within their repo, instead of hardcoding vars in the workflow.
+          TFVARS_ARG=""
+          if [ -n "${{ inputs.compliance_tfvars_file }}" ] && \
+             [ -f "${{ inputs.compliance_tfvars_file }}" ]; then
+            TFVARS_ARG="-var-file=${{ inputs.compliance_tfvars_file }}"
+            echo "Using compliance tfvars: ${{ inputs.compliance_tfvars_file }}"
+          fi
+          terraform plan $TFVARS_ARG -out=tfplan -input=false || true
           terraform show -json tfplan > tfplan.json
 
       - name: Run terraform-compliance
