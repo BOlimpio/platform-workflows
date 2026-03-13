@@ -374,14 +374,30 @@ If the artifact upload fails, apply cannot proceed. This prevents the "I approve
 
 ## Versioning Strategy
 
-Workflows are tagged with semantic versions:
+Workflows are tagged with semantic versions. Consumers reference the floating `@v1` tag — it always points to the latest v1.x without requiring changes on the consumer side.
+
+### Initial setup (first time)
+
+After pushing to `main`, create the initial tags:
 
 ```bash
-# Create a new release
+# Create immutable snapshot
+git tag -a v1.0.0 -m "Initial release"
+git push origin v1.0.0
+
+# Create floating pointer (what consumers reference)
+git tag -a v1 -m "Floating v1 tag"
+git push origin v1
+```
+
+### Publishing a new release
+
+```bash
+# Tag the new version
 git tag -a v1.2.0 -m "Add compliance_tfvars_file input"
 git push origin v1.2.0
 
-# Update floating tag
+# Move the floating tag forward
 git tag -fa v1 -m "Update v1 to v1.2.0"
 git push origin v1 --force
 ```
@@ -391,7 +407,7 @@ Consumers use the floating tag for automatic updates:
 uses: YOUR_ORG/platform-workflows/.github/workflows/terraform-ci.yml@v1
 ```
 
-Or pin to a specific version for controlled updates:
+Or pin to a specific version for controlled rollouts:
 ```yaml
 uses: YOUR_ORG/platform-workflows/.github/workflows/terraform-ci.yml@v1.2.0
 ```
